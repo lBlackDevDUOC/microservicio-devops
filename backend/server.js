@@ -141,3 +141,4 @@ app.listen(PORT, async () => {
   console.log(`Servidor backend escuchando en puerto ${PORT}`);
   await initDb();
 });
+// validacion de stock antes de vender
