@@ -142,3 +142,4 @@ app.listen(PORT, async () => {
   await initDb();
 });
 // filtro de productos por categoria
+// endpoint de health check mejorado
