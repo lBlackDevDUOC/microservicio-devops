@@ -1,0 +1,519 @@
+name: CI/CD tienda-perritos
+
+# Flujo GitFlow:
+#  - feature/** y hotfix/**: calidad + seguridad + build de imagenes (sin publicar)
+#  - PR a develop/main:      lo anterior + revision de dependencias (bloquea el merge si falla)
+#  - develop:                publica imagenes y despliega en el entorno "staging"
+#  - main:                   publica imagenes y despliega en el entorno "production"
+on:
+  push:
+    branches: [main, develop, "feature/**", "hotfix/**"]
+    paths-ignore: ["**.md"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Minimo privilegio por defecto; cada job solicita solo lo que necesita
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "24"
+  REGISTRY: ghcr.io
+  # Se publica solo en push a develop/main (no en PR ni en ramas de trabajo)
+  PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. Calidad: lint + pruebas unitarias + cobertura minima (80 %)
+  # ------------------------------------------------------------------
+  test:
+    name: Pruebas unitarias y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Configurar Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Instalar dependencias (reproducible con package-lock, sin scripts de terceros)
+        run: npm ci --ignore-scripts
+
+      - name: Analisis estatico (ESLint)
+        run: npm run lint
+
+      - name: Validar sintaxis del frontend
+        run: node --check ../frontend/app.js
+
+      - name: Pruebas unitarias con umbral de cobertura
+        # jest falla si la cobertura baja del 80 % (coverageThreshold en package.json)
+        run: npm run test:ci
+
+      - name: Auditoria de dependencias de produccion
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          # shellcheck disable=SC2016
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e '
+              const t = require("./coverage/coverage-summary.json").total;
+              const fila = (k) => `| ${k} | ${t[k].pct} % | ${t[k].covered}/${t[k].total} |`;
+              console.log(["### Cobertura de pruebas (umbral 80 %)", "| Metrica | % | Cubierto |", "|---|---|---|",
+                ...["lines", "statements", "functions", "branches"].map(fila)].join("\n"));
+            ' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            backend/coverage/
+            backend/reports/
+          retention-days: 30
+
+  # ------------------------------------------------------------------
+  # 2a. Seguridad SAST + quality gate: SonarCloud
+  # ------------------------------------------------------------------
+  # El plan Free de SonarCloud analiza main y pull requests (no otras ramas):
+  # los cambios se validan en el PR antes del merge y main se analiza al integrarse.
+  sonarcloud:
+    name: Analisis de codigo (SonarCloud)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    steps:
+      - name: Descargar repositorio (historial completo para blame)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Descargar cobertura generada por las pruebas
+        uses: actions/download-artifact@v4
+        with:
+          name: test-reports
+          path: backend
+
+      - name: Escaneo SonarCloud con espera del Quality Gate
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # sonar.qualitygate.wait=true (sonar-project.properties): si el Quality Gate
+        # falla, este job falla y bloquea la construccion y el despliegue.
+
+  # ------------------------------------------------------------------
+  # 2b. Seguridad SCA: Snyk sobre dependencias npm
+  # ------------------------------------------------------------------
+  snyk:
+    name: Vulnerabilidades en dependencias (Snyk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Escaneo Snyk (falla con severidad alta o critica)
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --file=backend/package-lock.json --package-manager=npm --severity-threshold=high --sarif-file-output=snyk.sarif
+
+      - name: Publicar hallazgos en GitHub Security (alertas)
+        if: always() && hashFiles('snyk.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk.sarif
+          category: snyk-dependencias
+
+  # ------------------------------------------------------------------
+  # 2c. Revision de dependencias en Pull Requests (complementa Dependabot)
+  # ------------------------------------------------------------------
+  dependency-review:
+    name: Revision de dependencias del PR
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Bloquear dependencias nuevas con vulnerabilidades altas
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  # ------------------------------------------------------------------
+  # 3. Contenedores: build multi-stage, escaneo de imagen y publicacion
+  # ------------------------------------------------------------------
+  build-images:
+    name: Imagen ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    # Gate de calidad y seguridad: no se construye si algo anterior fallo
+    # (SonarCloud puede venir "skipped" en ramas que no son main ni PR)
+    needs: [test, sonarcloud, snyk]
+    if: >-
+      !cancelled() &&
+      needs.test.result == 'success' &&
+      needs.snyk.result == 'success' &&
+      (needs.sonarcloud.result == 'success' || needs.sonarcloud.result == 'skipped')
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        service: [backend, frontend, db]
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Nombre de imagen en minusculas
+        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/tienda-${{ matrix.service }}" >> "$GITHUB_ENV"
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Iniciar sesion en GitHub Container Registry
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiquetas y metadatos OCI (trazabilidad)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Construir imagen (etapa runtime) y cargarla para el escaneo
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Escaneo de la imagen con Snyk Container
+        # Bloquea vulnerabilidades altas/criticas introducidas por nuestras capas;
+        # las de la imagen base se gestionan con las actualizaciones de Dependabot (docker).
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.IMAGE }}:scan
+          args: --file=${{ matrix.service }}/Dockerfile --severity-threshold=high --exclude-base-image-vulns --sarif-file-output=snyk-container.sarif
+
+      - name: Publicar hallazgos de la imagen en GitHub Security
+        if: always() && hashFiles('snyk-container.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-container.sarif
+          category: snyk-container-${{ matrix.service }}
+
+      - name: Publicar imagen en GHCR (con SBOM y provenance)
+        id: push
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+            VCS_REF=${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ matrix.service }}
+
+      - name: Atestacion de origen de la imagen
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Resumen de la imagen
+        run: |
+          {
+            echo "### Imagen tienda-${{ matrix.service }}"
+            echo "- Tamano: $(docker image inspect "$IMAGE:scan" --format '{{.Size}}' | awk '{printf "%.1f MB", $1/1024/1024}')"
+            echo "- Publicada: ${PUBLISH}"
+            echo "- Digest: \`${{ steps.push.outputs.digest || 'no publicada' }}\`"
+            echo '- Tags:'
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------
+  # 4a. Despliegue automatico en entorno simulado con Docker Compose
+  # ------------------------------------------------------------------
+  deploy-compose:
+    name: Despliegue Docker Compose (${{ github.ref_name == 'main' && 'production' || 'staging' }})
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: >-
+      !cancelled() && needs.build-images.result == 'success' &&
+      github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Iniciar sesion en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generar configuracion del entorno (credenciales aleatorias, no versionadas)
+        run: |
+          {
+            echo "IMAGE_REGISTRY=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}"
+            echo "IMAGE_TAG=${IMAGE_TAG}"
+            echo "MYSQL_ROOT_PASSWORD=$(openssl rand -hex 16)"
+            echo "MYSQL_DATABASE=tienda_perritos"
+            echo "MYSQL_USER=tienda_app"
+            echo "MYSQL_PASSWORD=$(openssl rand -hex 16)"
+            echo "BACKEND_REPLICAS=2"
+            echo "FRONTEND_PORT=8080"
+          } > .env
+
+      - name: Descargar imagenes del commit ${{ github.sha }}
+        run: docker compose pull
+
+      - name: Desplegar stack y esperar a que este saludable
+        run: docker compose up -d --no-build --wait --wait-timeout 180
+
+      - name: Pruebas de humo
+        run: bash scripts/smoke-test.sh http://localhost:8080 "$IMAGE_TAG"
+
+      - name: Escalar backend a 3 replicas y verificar
+        run: |
+          docker compose up -d --no-build --wait --scale tienda-backend=3
+          test "$(docker compose ps -q tienda-backend | wc -l)" -eq 3
+          bash scripts/smoke-test.sh http://localhost:8080 "$IMAGE_TAG"
+
+      - name: Registro de despliegue (trazabilidad)
+        if: always()
+        run: |
+          mkdir -p deployment
+          docker compose ps --format json > deployment/services.json || true
+          {
+            echo "{"
+            echo "  \"environment\": \"${{ github.ref_name == 'main' && 'production' || 'staging' }}\","
+            echo "  \"commit\": \"${GITHUB_SHA}\","
+            echo "  \"branch\": \"${GITHUB_REF_NAME}\","
+            echo "  \"actor\": \"${GITHUB_ACTOR}\","
+            echo "  \"run\": \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\","
+            echo "  \"deployed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+            echo "  \"images\": ["
+            # Imagen y digest exactos de cada contenedor en ejecucion
+            docker compose ps -q | xargs docker inspect --format '    "{{.Config.Image}} ({{.Image}})"' | sort -u | sed '$!s/$/,/'
+            echo "  ]"
+            echo "}"
+          } > deployment/deployment.json
+          cat deployment/deployment.json
+          {
+            echo "### Despliegue Docker Compose"
+            echo '```json'
+            cat deployment/deployment.json
+            echo '```'
+            echo '```'
+            docker compose ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker compose logs --no-color > deployment/compose.log 2>&1 || true
+
+      - name: Guardar registro de despliegue
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-compose
+          path: deployment/
+          retention-days: 90
+
+      - name: Detener entorno simulado
+        if: always()
+        run: docker compose down -v
+
+  # ------------------------------------------------------------------
+  # 4b. Orquestacion: despliegue en Kubernetes (cluster kind en el runner)
+  # ------------------------------------------------------------------
+  deploy-kubernetes:
+    name: Despliegue Kubernetes (${{ github.ref_name == 'main' && 'production' || 'staging' }})
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: >-
+      !cancelled() && needs.build-images.result == 'success' &&
+      github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v5
+
+      - name: Crear cluster Kubernetes local (kind, 1 control-plane + 2 workers)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: tienda
+          config: .github/kind-config.yaml
+
+      - name: Instalar metrics-server (requerido por los HPA)
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          kubectl patch deployment metrics-server -n kube-system --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+      - name: Iniciar sesion en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cargar en el cluster las imagenes del commit
+        run: |
+          PREFIX="${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}"
+          echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          for svc in backend frontend db; do
+            docker pull "$PREFIX/tienda-$svc:$IMAGE_TAG"
+            kind load docker-image "$PREFIX/tienda-$svc:$IMAGE_TAG" --name tienda
+          done
+
+      - name: Fijar version de las imagenes con kustomize
+        working-directory: k8s
+        run: |
+          for svc in backend frontend db; do
+            kustomize edit set image "ghcr.io/lblackdevduoc/tienda-$svc=$PREFIX/tienda-$svc:$IMAGE_TAG"
+          done
+          kustomize build . | grep "image:"
+
+      - name: Crear namespace y Secret con credenciales aleatorias
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl create secret generic mysql-secret -n tienda \
+            --from-literal=MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)" \
+            --from-literal=MYSQL_USER=tienda_app \
+            --from-literal=MYSQL_PASSWORD="$(openssl rand -hex 16)"
+
+      - name: Aplicar manifiestos
+        run: kubectl apply -k k8s/
+
+      - name: Esperar rollout de todos los componentes
+        run: |
+          kubectl -n tienda rollout status statefulset/tienda-db --timeout=300s
+          kubectl -n tienda rollout status deployment/tienda-backend --timeout=180s
+          kubectl -n tienda rollout status deployment/tienda-frontend --timeout=120s
+          kubectl -n tienda annotate deployment/tienda-backend deployment/tienda-frontend \
+            kubernetes.io/change-cause="CI ${GITHUB_SHA::7} run ${GITHUB_RUN_ID}" --overwrite
+
+      - name: Pruebas de humo a traves del Service del frontend
+        run: |
+          kubectl -n tienda port-forward svc/tienda-frontend 8081:80 > /tmp/port-forward.log 2>&1 &
+          sleep 3
+          bash scripts/smoke-test.sh http://localhost:8081 "$IMAGE_TAG"
+
+      - name: Estado del cluster
+        if: always()
+        run: |
+          {
+            echo "### Despliegue Kubernetes (kind)"
+            echo '```'
+            kubectl -n tienda get deploy,sts,pods,svc,hpa,pdb,networkpolicy -o wide
+            echo
+            kubectl -n tienda rollout history deployment/tienda-backend
+            echo
+            kubectl get pods -n tienda -o custom-columns='POD:.metadata.name,NODO:.spec.nodeName,IMAGEN:.spec.containers[0].image'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnostico ante fallas
+        if: failure()
+        run: |
+          kubectl -n tienda describe pods
+          kubectl -n tienda get events --sort-by=.lastTimestamp
+          kubectl -n tienda logs -l app=tienda-backend --tail=100 || true
+
+  # ------------------------------------------------------------------
+  # 5. Alerta: abre un issue si el pipeline falla en develop o main
+  # ------------------------------------------------------------------
+  alert-on-failure:
+    name: Alerta de pipeline fallido
+    runs-on: ubuntu-latest
+    needs: [test, sonarcloud, snyk, build-images, deploy-compose, deploy-kubernetes]
+    if: failure() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    permissions:
+      issues: write
+    steps:
+      - name: Crear issue de alerta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh label create pipeline-failure --color B60205 --description "Fallo del pipeline CI/CD" 2>/dev/null || true
+          gh issue create \
+            --title "Pipeline fallido en ${GITHUB_REF_NAME} (${GITHUB_SHA::7})" \
+            --label pipeline-failure \
+            --assignee "${GITHUB_ACTOR}" \
+            --body "El pipeline CI/CD fallo en la rama \`${GITHUB_REF_NAME}\`.
+
+          - Commit: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+          - Ejecucion: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Autor: @${GITHUB_ACTOR}
+
+          Resultados: test=${{ needs.test.result }}, sonarcloud=${{ needs.sonarcloud.result }}, snyk=${{ needs.snyk.result }}, build=${{ needs.build-images.result }}, compose=${{ needs.deploy-compose.result }}, kubernetes=${{ needs.deploy-kubernetes.result }}"

@@ -43,21 +43,28 @@ async function cargarProductos() {
 }
 
 function renderProductos(productos) {
-  tbody.innerHTML = "";
+  tbody.replaceChildren();
   productos.forEach((p) => {
     const tr = document.createElement("tr");
 
-    tr.innerHTML = `
-      <td>${p.id}</td>
-      <td>${p.nombre}</td>
-      <td>${p.descripcion || ""}</td>
-      <td>$${Number(p.precio).toFixed(2)}</td>
-      <td>${p.stock}</td>
-      <td>
-        <button data-id="${p.id}" class="btn-editar">Editar</button>
-        <button data-id="${p.id}" class="btn-eliminar danger">Eliminar</button>
-      </td>
-    `;
+    // textContent evita inyeccion de HTML (XSS) con datos provenientes de la API
+    [p.id, p.nombre, p.descripcion || "", `$${Number(p.precio).toFixed(2)}`, p.stock].forEach((valor) => {
+      const td = document.createElement("td");
+      td.textContent = valor;
+      tr.appendChild(td);
+    });
+
+    const acciones = document.createElement("td");
+    const btnEditar = document.createElement("button");
+    btnEditar.textContent = "Editar";
+    btnEditar.className = "btn-editar";
+    btnEditar.dataset.id = p.id;
+    const btnEliminar = document.createElement("button");
+    btnEliminar.textContent = "Eliminar";
+    btnEliminar.className = "btn-eliminar danger";
+    btnEliminar.dataset.id = p.id;
+    acciones.append(btnEditar, btnEliminar);
+    tr.appendChild(acciones);
 
     tbody.appendChild(tr);
   });
@@ -66,7 +73,7 @@ function renderProductos(productos) {
   document.querySelectorAll(".btn-editar").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-id");
-      editarProducto(id);
+      editarProducto(id).catch(console.error);
     });
   });
 
@@ -74,7 +81,7 @@ function renderProductos(productos) {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-id");
       if (confirm("¿Seguro que deseas eliminar este producto?")) {
-        eliminarProducto(id);
+        eliminarProducto(id).catch(console.error);
       }
     });
   });
@@ -93,15 +100,15 @@ function obtenerDatosFormulario() {
   return {
     nombre: inputNombre.value.trim(),
     descripcion: inputDescripcion.value.trim(),
-    precio: parseFloat(inputPrecio.value),
-    stock: parseInt(inputStock.value, 10),
+    precio: Number.parseFloat(inputPrecio.value),
+    stock: Number.parseInt(inputStock.value, 10),
   };
 }
 
 function validarProducto(prod) {
   if (!prod.nombre) return "El nombre es obligatorio.";
-  if (isNaN(prod.precio) || prod.precio < 0) return "El precio debe ser un número mayor o igual a 0.";
-  if (isNaN(prod.stock) || prod.stock < 0) return "El stock debe ser un número mayor o igual a 0.";
+  if (Number.isNaN(prod.precio) || prod.precio < 0) return "El precio debe ser un número mayor o igual a 0.";
+  if (Number.isNaN(prod.stock) || prod.stock < 0) return "El stock debe ser un número mayor o igual a 0.";
   return null;
 }
 
@@ -136,9 +143,10 @@ async function guardarProducto() {
       throw new Error(data.message || "Error al guardar el producto");
     }
 
+    const mensaje = editandoId ? "Producto actualizado correctamente." : "Producto creado correctamente.";
     limpiarFormulario();
     await cargarProductos();
-    setStatus(editandoId ? "Producto actualizado correctamente." : "Producto creado correctamente.", "ok");
+    setStatus(mensaje, "ok");
   } catch (err) {
     console.error(err);
     setStatus("Ocurrió un error al guardar el producto.", "error");
@@ -176,12 +184,12 @@ async function eliminarProducto(id) {
 }
 
 // Eventos
-btnCargar.addEventListener("click", cargarProductos);
-btnGuardar.addEventListener("click", guardarProducto);
+btnCargar.addEventListener("click", () => cargarProductos().catch(console.error));
+btnGuardar.addEventListener("click", () => guardarProducto().catch(console.error));
 btnCancelar.addEventListener("click", () => {
   limpiarFormulario();
   setStatus("Edición cancelada.", "ok");
 });
 
 // Cargar productos al iniciar
-cargarProductos();
+cargarProductos().catch(console.error);

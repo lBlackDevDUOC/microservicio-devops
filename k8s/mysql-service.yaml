@@ -1,13 +1,15 @@
+# Servicio headless requerido por el StatefulSet (DNS estable: tienda-db)
 apiVersion: v1
 kind: Service
 metadata:
   name: tienda-db
   namespace: tienda
 spec:
+  clusterIP: None
   selector:
     app: tienda-db
   ports:
-    - protocol: TCP
+    - name: mysql
+      protocol: TCP
       port: 3306
       targetPort: 3306
-  clusterIP: None

@@ -5,6 +5,12 @@ metadata:
   namespace: tienda
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: tienda-frontend
@@ -12,31 +18,64 @@ spec:
     metadata:
       labels:
         app: tienda-frontend
+        tier: frontend
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: tienda-frontend
       containers:
         - name: frontend
-          image: 379011730405.dkr.ecr.us-east-1.amazonaws.com/tienda-frontend:eks-v1
+          image: ghcr.io/lblackdevduoc/tienda-frontend:latest
           ports:
-            - containerPort: 80
-
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BACKEND_URL
+              value: http://tienda-backend:3001
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
-              cpu: "50m"
-              memory: "64Mi"
+              cpu: 50m
+              memory: 32Mi
+              ephemeral-storage: 32Mi
             limits:
-              cpu: "300m"
-              memory: "256Mi"
-
+              cpu: 300m
+              memory: 128Mi
+              ephemeral-storage: 128Mi
           readinessProbe:
             httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 3
+              path: /healthz
+              port: http
             periodSeconds: 5
-
           livenessProbe:
             httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 10
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
             periodSeconds: 10
+          # Rutas escribibles minimas con sistema de archivos raiz de solo lectura
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-conf
+          emptyDir: {}

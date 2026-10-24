@@ -1,0 +1,60 @@
+# Minimo privilegio en red: se deniega todo el trafico de entrada y
+# solo se habilitan los flujos publico -> frontend -> backend -> base de datos.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: tienda
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-public
+  namespace: tienda
+spec:
+  podSelector:
+    matchLabels:
+      app: tienda-frontend
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-from-frontend
+  namespace: tienda
+spec:
+  podSelector:
+    matchLabels:
+      app: tienda-backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: tienda-frontend
+      ports:
+        - port: 3001
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-from-backend
+  namespace: tienda
+spec:
+  podSelector:
+    matchLabels:
+      app: tienda-db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: tienda-backend
+      ports:
+        - port: 3306
