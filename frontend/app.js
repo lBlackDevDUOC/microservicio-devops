@@ -73,7 +73,7 @@ function renderProductos(productos) {
   document.querySelectorAll(".btn-editar").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-id");
-      editarProducto(id);
+      editarProducto(id).catch(console.error);
     });
   });
 
@@ -81,7 +81,7 @@ function renderProductos(productos) {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-id");
       if (confirm("¿Seguro que deseas eliminar este producto?")) {
-        eliminarProducto(id);
+        eliminarProducto(id).catch(console.error);
       }
     });
   });
@@ -100,15 +100,15 @@ function obtenerDatosFormulario() {
   return {
     nombre: inputNombre.value.trim(),
     descripcion: inputDescripcion.value.trim(),
-    precio: parseFloat(inputPrecio.value),
-    stock: parseInt(inputStock.value, 10),
+    precio: Number.parseFloat(inputPrecio.value),
+    stock: Number.parseInt(inputStock.value, 10),
   };
 }
 
 function validarProducto(prod) {
   if (!prod.nombre) return "El nombre es obligatorio.";
-  if (isNaN(prod.precio) || prod.precio < 0) return "El precio debe ser un número mayor o igual a 0.";
-  if (isNaN(prod.stock) || prod.stock < 0) return "El stock debe ser un número mayor o igual a 0.";
+  if (Number.isNaN(prod.precio) || prod.precio < 0) return "El precio debe ser un número mayor o igual a 0.";
+  if (Number.isNaN(prod.stock) || prod.stock < 0) return "El stock debe ser un número mayor o igual a 0.";
   return null;
 }
 
@@ -143,9 +143,10 @@ async function guardarProducto() {
       throw new Error(data.message || "Error al guardar el producto");
     }
 
+    const mensaje = editandoId ? "Producto actualizado correctamente." : "Producto creado correctamente.";
     limpiarFormulario();
     await cargarProductos();
-    setStatus(editandoId ? "Producto actualizado correctamente." : "Producto creado correctamente.", "ok");
+    setStatus(mensaje, "ok");
   } catch (err) {
     console.error(err);
     setStatus("Ocurrió un error al guardar el producto.", "error");
@@ -183,12 +184,12 @@ async function eliminarProducto(id) {
 }
 
 // Eventos
-btnCargar.addEventListener("click", cargarProductos);
-btnGuardar.addEventListener("click", guardarProducto);
+btnCargar.addEventListener("click", () => cargarProductos().catch(console.error));
+btnGuardar.addEventListener("click", () => guardarProducto().catch(console.error));
 btnCancelar.addEventListener("click", () => {
   limpiarFormulario();
   setStatus("Edición cancelada.", "ok");
 });
 
 // Cargar productos al iniciar
-cargarProductos();
+cargarProductos().catch(console.error);

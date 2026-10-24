@@ -210,6 +210,22 @@ describe("DELETE /api/productos/:id", () => {
   });
 });
 
+describe("CORS", () => {
+  test("no expone cabeceras CORS si no hay origen configurado", async () => {
+    const { app } = crearApp();
+    const res = await request(app).get("/api/health").set("Origin", "https://evil.example");
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  test("permite solo los origenes configurados", async () => {
+    const app = createApp({ pool: { query: jest.fn() }, corsOrigin: "https://tienda.example, https://admin.example" });
+    const permitido = await request(app).get("/api/health").set("Origin", "https://admin.example");
+    expect(permitido.headers["access-control-allow-origin"]).toBe("https://admin.example");
+    const rechazado = await request(app).get("/api/health").set("Origin", "https://evil.example");
+    expect(rechazado.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
 describe("rutas desconocidas", () => {
   test("responde 404 en JSON", async () => {
     const { app } = crearApp();

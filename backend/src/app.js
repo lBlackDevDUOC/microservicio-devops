@@ -8,11 +8,15 @@ const COLUMNAS = "id, nombre, descripcion, precio, stock";
  * Crea la aplicacion Express. El pool de MySQL se inyecta para poder
  * reemplazarlo por un doble de prueba en los tests unitarios.
  */
-function createApp({ pool, version = process.env.APP_VERSION || "dev" }) {
+function createApp({ pool, version = process.env.APP_VERSION || "dev", corsOrigin = process.env.CORS_ORIGIN }) {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(cors());
+  // El frontend consume la API por el mismo origen (proxy de Nginx), por lo que CORS
+  // queda deshabilitado salvo que se indique explicitamente un origen permitido.
+  if (corsOrigin) {
+    app.use(cors({ origin: corsOrigin.split(",").map((o) => o.trim()) }));
+  }
   app.use(express.json({ limit: "100kb" }));
 
   // Helper para manejar errores

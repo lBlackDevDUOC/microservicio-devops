@@ -49,8 +49,8 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
-      - name: Instalar dependencias (reproducible con package-lock)
-        run: npm ci
+      - name: Instalar dependencias (reproducible con package-lock, sin scripts de terceros)
+        run: npm ci --ignore-scripts
 
       - name: Analisis estatico (ESLint)
         run: npm run lint
