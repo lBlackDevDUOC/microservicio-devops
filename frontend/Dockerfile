@@ -18,7 +18,8 @@ ENV BACKEND_URL=http://tienda-backend:3001
 
 # La imagen oficial procesa /etc/nginx/templates/*.template con envsubst al arrancar
 COPY default.conf.template /etc/nginx/templates/default.conf.template
-COPY --chown=nginx:nginx index.html app.js /usr/share/nginx/html/
+# Archivos estaticos propiedad de root: el usuario nginx solo puede leerlos, no modificarlos
+COPY --chmod=644 index.html app.js /usr/share/nginx/html/
 
 EXPOSE 8080
 
