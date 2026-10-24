@@ -1,336 +1,236 @@
-# tienda-perritos
+# Tienda Perritos 🐶
 
 [![CI/CD tienda-perritos](https://github.com/lBlackDevDUOC/microservicio-devops/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/lBlackDevDUOC/microservicio-devops/actions/workflows/ci-cd.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=lBlackDevDUOC_microservicio-devops&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=lBlackDevDUOC_microservicio-devops)
 
-Microservicio para administrar el catalogo de una tienda de alimentos para perritos. Separa un backend Node.js/Express, un frontend web servido por Nginx y una base de datos MySQL. Cada componente se ejecuta en contenedores, se orquesta con Docker Compose y Kubernetes, y su ciclo de vida completo (pruebas, analisis de seguridad, construccion de imagenes y despliegue) esta automatizado con GitHub Actions.
+Este proyecto es un pequeño sistema para administrar el catálogo de una tienda de alimentos para perritos: se pueden listar, crear, editar y eliminar productos desde una página web.
 
-> **Evaluacion Parcial 2 - DOY0101 Ingenieria DevOps:** "Anadiendole complejidad a nuestro pipeline". La seccion [Cumplimiento de la pauta](#cumplimiento-de-la-pauta-ep2) relaciona cada indicador con su evidencia en el repositorio.
+Lo usamos como base para la **Evaluación Parcial 2 de Ingeniería DevOps (DOY0101)**. El objetivo no es tanto la aplicación en sí, sino todo lo que pasa alrededor: cada cambio que subimos se prueba, se analiza en busca de problemas de seguridad, se empaqueta en contenedores y se despliega de forma automática con GitHub Actions.
 
-## Tabla de contenidos
+## ¿Qué tiene el proyecto?
 
-1. [Arquitectura](#arquitectura)
-2. [Estructura del proyecto](#estructura-del-proyecto)
-3. [Contenedores (IE1)](#contenedores-ie1)
-4. [Pipeline CI/CD](#pipeline-cicd)
-5. [Politicas de calidad y pruebas (IE2)](#politicas-de-calidad-y-pruebas-ie2)
-6. [Seguridad y escalabilidad (IE3)](#seguridad-y-escalabilidad-ie3)
-7. [Despliegue automatico y trazabilidad (IE4)](#despliegue-automatico-y-trazabilidad-ie4)
-8. [Orquestacion (IE5)](#orquestacion-ie5)
-9. [Configuracion inicial del repositorio](#configuracion-inicial-del-repositorio)
-10. [Ejecucion local](#ejecucion-local)
-11. [GitFlow y buenas practicas](#gitflow-y-buenas-practicas)
-12. [Cumplimiento de la pauta EP2](#cumplimiento-de-la-pauta-ep2)
-13. [Uso de IA y reflexiones](#uso-de-inteligencia-artificial)
+La aplicación tiene tres partes, cada una en su propio contenedor:
 
-## Arquitectura
+| Parte | Tecnología | Qué hace |
+|---|---|---|
+| **Frontend** | Nginx | Sirve la página web y reenvía las llamadas `/api` al backend |
+| **Backend** | Node.js 24 + Express | API REST con el CRUD de productos |
+| **Base de datos** | MySQL 8.4 | Guarda los productos (se carga con datos de ejemplo al iniciar) |
 
 ```mermaid
 flowchart LR
-    U[Usuario] -->|HTTP :8080 / LoadBalancer :80| F[tienda-frontend<br/>Nginx sin privilegios]
-    F -->|/api/* proxy| B1[tienda-backend<br/>replica 1]
-    F -->|/api/* proxy| B2[tienda-backend<br/>replica N]
-    B1 --> D[(tienda-db<br/>MySQL 8.4<br/>volumen persistente)]
-    B2 --> D
+    U[Usuario] --> F[Frontend<br/>Nginx]
+    F -->|/api| B[Backend<br/>Node.js<br/>2 o más réplicas]
+    B --> D[(MySQL)]
 ```
 
-| Componente | Tecnologia | Puerto | Endpoints de salud |
-|---|---|---|---|
-| `tienda-frontend` | Nginx 1.27 (imagen *unprivileged*) | 8080 | `/healthz` |
-| `tienda-backend` | Node.js 24 + Express | 3001 | `/api/health` (liveness), `/api/ready` (readiness, consulta MySQL) |
-| `tienda-db` | MySQL 8.4 LTS | 3306 | `mysqladmin ping` |
+Y alrededor de la aplicación:
 
-API REST del backend:
-
-| Metodo | Ruta | Descripcion |
-|---|---|---|
-| GET | `/api/productos` | Lista los productos |
-| GET | `/api/productos/:id` | Obtiene un producto |
-| POST | `/api/productos` | Crea un producto (valida nombre, precio >= 0 y stock entero >= 0) |
-| PUT | `/api/productos/:id` | Actualiza un producto |
-| DELETE | `/api/productos/:id` | Elimina un producto |
-
-## Estructura del proyecto
+- **Dockerfiles** para los tres servicios.
+- **Docker Compose** para levantar todo junto en cualquier computador.
+- **Manifiestos de Kubernetes** con autoescalado, alta disponibilidad y reglas de red.
+- **Pruebas unitarias** con Jest.
+- **Pipeline CI/CD** en GitHub Actions con análisis de calidad y seguridad (SonarCloud, Snyk y Dependabot).
 
 ```text
 .
-├── .github/
-│   ├── dependabot.yml            # Escaneo de dependencias npm, Docker y Actions
-│   ├── kind-config.yaml          # Cluster Kubernetes efimero del pipeline
-│   └── workflows/ci-cd.yml       # Pipeline CI/CD completo
-├── backend/
-│   ├── Dockerfile                # Multi-stage: deps -> test -> runtime
-│   ├── src/                      # app.js (rutas), db.js (pool), validators.js
-│   ├── tests/                    # Pruebas unitarias Jest + Supertest
-│   ├── server.js                 # Punto de entrada con apagado ordenado
-│   └── package.json              # Scripts, umbral de cobertura 80 %
-├── db/
-│   ├── Dockerfile                # MySQL 8.4 + esquema inicial (sin credenciales)
-│   └── init.sql
-├── frontend/
-│   ├── Dockerfile                # Nginx sin privilegios
-│   ├── default.conf.template     # Proxy al backend + cabeceras de seguridad
-│   ├── index.html
-│   └── app.js
-├── k8s/                          # Manifiestos Kubernetes (kustomize)
-├── scripts/smoke-test.sh         # Pruebas de humo post-despliegue
-├── docker-compose.yml            # Orquestacion local / entorno simulado
-├── sonar-project.properties      # Configuracion de SonarCloud
-└── .env.example                  # Variables requeridas por Docker Compose
+├── backend/          API (código en src/, pruebas en tests/)
+├── frontend/         Página web + configuración de Nginx
+├── db/               Imagen de MySQL con el script inicial
+├── k8s/              Manifiestos de Kubernetes
+├── scripts/          Pruebas de humo que se corren después de cada despliegue
+├── .github/          Pipeline (workflows/ci-cd.yml) y Dependabot
+└── docker-compose.yml
 ```
 
-## Contenedores (IE1)
+## Cómo levantarlo
 
-Cada servicio tiene su propio `Dockerfile`, pensado para ser pequeno, seguro y reproducible:
+Solo necesitas **Docker Desktop** (o Docker con Compose v2).
 
-| Practica | backend | frontend | db |
-|---|---|---|---|
-| Imagen base oficial, liviana y con version fijada | `node:24-alpine` | `nginxinc/nginx-unprivileged:1.27-alpine` | `mysql:8.4` |
-| Multi-stage (solo lo necesario en la imagen final) | Si: `deps` -> `test` -> `runtime` | N/A (archivos estaticos) | N/A |
-| Usuario sin privilegios | `node` (uid 1000) | `nginx` (uid 101) | `mysql` (uid 999 en Kubernetes) |
-| `HEALTHCHECK` | `/api/health` | `/healthz` | `mysqladmin ping` |
-| Sin secretos dentro de la imagen | Si | Si | Si (antes tenia contrasenas en `ENV`) |
-| Etiquetas OCI con commit y version | Si | Si | Si |
-| `.dockerignore` | Si | Si | - |
+1. Clona el repositorio y entra a la carpeta:
 
-El backend usa la etapa `deps` para instalar solo dependencias de produccion con `npm ci --omit=dev`, por lo que Jest, ESLint y Supertest **no** llegan a la imagen final. La etapa `test` permite ejecutar las pruebas dentro de un contenedor (`docker build --target test backend`). Resultado: backend ~256 MB y frontend ~74 MB.
+   ```bash
+   git clone https://github.com/lBlackDevDUOC/microservicio-devops.git
+   cd microservicio-devops
+   ```
 
-## Pipeline CI/CD
+2. Crea el archivo de configuración a partir del ejemplo (ahí van las contraseñas de MySQL; puedes dejarlas como están para probar):
 
-Archivo: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
+   ```bash
+   cp .env.example .env
+   ```
 
-```mermaid
-flowchart LR
-    subgraph CI[Integracion continua]
-        T[test<br/>ESLint + Jest<br/>cobertura >= 80 %<br/>npm audit]
-        S[sonarcloud<br/>SAST + Quality Gate]
-        K[snyk<br/>SCA dependencias]
-        R[dependency-review<br/>solo PR]
-    end
-    subgraph Build[Contenedores]
-        I[build-images<br/>backend / frontend / db<br/>Snyk Container<br/>push GHCR + SBOM]
-    end
-    subgraph CD[Entrega continua]
-        C[deploy-compose<br/>staging / production]
-        KS[deploy-kubernetes<br/>cluster kind]
-    end
-    A[alert-on-failure<br/>issue automatico]
-    T --> S --> I
-    K --> I
-    T --> I
-    I --> C
-    I --> KS
-    C -. falla .-> A
-    KS -. falla .-> A
+3. Levanta todo:
+
+   ```bash
+   docker compose up -d --build --wait
+   ```
+
+4. Abre <http://localhost:8080> y listo.
+
+Algunos comandos útiles:
+
+```bash
+docker compose ps                                  # ver el estado de los contenedores
+docker compose up -d --scale tienda-backend=3      # escalar el backend a 3 réplicas
+bash scripts/smoke-test.sh http://localhost:8080   # probar que todo responde bien
+docker compose down -v                             # apagar y borrar los datos
 ```
 
-| Evento | Jobs que se ejecutan |
-|---|---|
-| Push a `feature/**` o `hotfix/**` | test, sonarcloud, snyk, build-images (sin publicar) |
-| Pull request a `develop` o `main` | lo anterior + dependency-review |
-| Push a `develop` (o *Run workflow* manual sobre `develop`) | todo + publicacion en GHCR + despliegue en entorno **staging** |
-| Push a `main` (o *Run workflow* manual sobre `main`) | todo + publicacion en GHCR (tag `latest`) + despliegue en entorno **production** |
-
-| Job | Que hace | Bloquea si... |
-|---|---|---|
-| `test` | `npm ci`, ESLint, `node --check` del frontend, Jest con cobertura, `npm audit --omit=dev --audit-level=high`, publica reportes JUnit/LCOV/Cobertura | falla una prueba, la cobertura baja de 80 %, hay errores de lint o vulnerabilidades altas |
-| `sonarcloud` | Analisis estatico (bugs, code smells, vulnerabilidades, hotspots) y cobertura | el Quality Gate de SonarCloud no se cumple (`sonar.qualitygate.wait=true`) |
-| `snyk` | Analisis de composicion (SCA) de `package-lock.json`; sube SARIF a *Security > Code scanning* | hay vulnerabilidades de severidad alta o critica |
-| `dependency-review` | Compara las dependencias que agrega un PR | el PR introduce dependencias con vulnerabilidades altas |
-| `build-images` | Build multi-stage con cache, escaneo Snyk Container, push a GHCR con SBOM, provenance y atestacion | Snyk detecta vulnerabilidades altas en las capas propias de la imagen |
-| `deploy-compose` | Despliega el stack con las imagenes del commit, ejecuta smoke tests, escala el backend a 3 replicas y guarda el registro del despliegue | algun smoke test falla o un contenedor no queda `healthy` |
-| `deploy-kubernetes` | Crea un cluster kind de 3 nodos, carga las imagenes, aplica `k8s/` con kustomize, espera los rollouts y ejecuta smoke tests | un rollout no termina o falla un smoke test |
-| `alert-on-failure` | Abre un issue con etiqueta `pipeline-failure` asignado al autor del commit | - |
-
-## Politicas de calidad y pruebas (IE2)
-
-Pruebas unitarias en [`backend/tests`](backend/tests) con **Jest** y **Supertest** (equivalente en Node.js a JUnit + JaCoCo en Java). El pool de MySQL se inyecta en `createApp({ pool })`, por lo que las pruebas reemplazan la base de datos por un doble de prueba y no necesitan infraestructura.
-
-Casos criticos cubiertos (52 pruebas):
-
-- CRUD completo con respuestas 200/201/404.
-- Reglas de negocio: precio >= 0, stock entero >= 0 (correccion del hotfix `validacion-stock`), largo de nombre y descripcion.
-- Validacion de ids (`/api/productos/abc` -> 400 sin consultar la base de datos).
-- JSON mal formado -> 400; rutas inexistentes -> 404.
-- Errores de base de datos -> 500 con mensaje controlado.
-- Readiness: 200 si MySQL responde, 503 si no.
-- Configuracion: el servicio no arranca sin credenciales (no hay contrasenas por defecto).
-
-**Politica de calidad del proyecto** (aplicada automaticamente por el pipeline):
-
-| Regla | Herramienta | Umbral |
-|---|---|---|
-| Todas las pruebas deben pasar | Jest | 100 % |
-| Cobertura minima de lineas, sentencias, funciones y ramas | Jest `coverageThreshold` | >= 80 % (actual: ~99 % lineas, ~88 % ramas) |
-| Sin errores de estilo/bugs estaticos | ESLint | 0 errores |
-| Quality Gate | SonarCloud | *Sonar way* aprobado |
-| Pruebas post-despliegue | `scripts/smoke-test.sh` | 10/10 verificaciones |
+Para correr las pruebas unitarias necesitas Node.js 24:
 
 ```bash
 cd backend
 npm ci
-npm test               # pruebas
-npm run test:ci        # pruebas + cobertura + reporte JUnit
+npm test
 ```
 
-El reporte HTML de cobertura queda en `backend/coverage/lcov-report/index.html` y se publica como artefacto `test-reports` en cada ejecucion del pipeline.
+La API queda disponible en `http://localhost:8080/api/productos`, y hay dos endpoints de salud: `/api/health` (el servicio está vivo y muestra la versión desplegada) y `/api/ready` (además confirma que hay conexión con MySQL).
 
-## Seguridad y escalabilidad (IE3)
+## Cómo funciona el pipeline
 
-### Seguridad en el pipeline (DevSecOps)
+Todo está en [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml). Trabajamos con GitFlow: las funcionalidades se desarrollan en ramas `feature/...`, se integran a `develop` mediante pull request y, cuando están listas, pasan a `main`.
 
-| Tipo | Herramienta | Momento |
-|---|---|---|
-| SCA (dependencias) | Dependabot, Snyk, `npm audit`, Dependency Review | continuo / cada push / cada PR |
-| SAST (codigo propio) | SonarCloud, ESLint | cada push |
-| Escaneo de contenedores | Snyk Container | cada build de imagen |
-| Cadena de suministro | SBOM + provenance + atestacion de GitHub | cada publicacion |
+```mermaid
+flowchart LR
+    T[Pruebas<br/>y cobertura] --> S[SonarCloud]
+    K[Snyk] --> I
+    S --> I[Construir y escanear<br/>imágenes Docker]
+    I --> C[Despliegue<br/>Docker Compose]
+    I --> KS[Despliegue<br/>Kubernetes]
+```
 
-- **Bloqueos:** cualquier hallazgo de severidad alta o critica, o un Quality Gate fallido, detiene el pipeline. Como `build-images` depende de `test`, `sonarcloud` y `snyk`, una imagen insegura nunca se publica ni se despliega.
-- **Alertas:** los resultados SARIF de Snyk aparecen en *Security > Code scanning*; Dependabot genera alertas y PRs automaticos; GitHub notifica por correo los workflows fallidos; y el job `alert-on-failure` abre un issue en `develop`/`main`.
-- **Secretos:** `SONAR_TOKEN` y `SNYK_TOKEN` viven en *GitHub Secrets*. Las credenciales de MySQL se generan aleatoriamente en cada despliegue (`openssl rand`) y nunca se versionan (`.env` esta en `.gitignore`; el antiguo `mysql-secret.yaml` con contrasenas se reemplazo por un ejemplo).
-- **Minimo privilegio en GitHub Actions:** `permissions: contents: read` global y permisos adicionales solo por job.
-- **Contenedores endurecidos:** usuarios no root, `read_only`, `cap_drop: ALL`, `no-new-privileges`, red `backend-net` interna (MySQL y backend sin acceso desde fuera ni salida a Internet).
-- **Aplicacion:** validacion de entradas, consultas parametrizadas, limite de 100 kb en el cuerpo, sin cabecera `X-Powered-By`, cabeceras `CSP`, `X-Frame-Options`, `X-Content-Type-Options` en Nginx y renderizado sin `innerHTML` en el frontend (evita XSS).
-- **Kubernetes:** Pod Security Standards (`baseline` obligatorio, `restricted` auditado), `securityContext` con `runAsNonRoot`, `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, sin token de service account y `NetworkPolicy` de denegacion por defecto.
+Las etapas, en orden:
 
-### Escalabilidad y desempeno
+1. **Pruebas:** se instalan las dependencias, se revisa el código con ESLint y se corren las pruebas unitarias con cobertura.
+2. **Calidad y seguridad:** SonarCloud revisa el código y Snyk busca vulnerabilidades en las librerías. En los pull requests también se revisa que no entren dependencias nuevas con vulnerabilidades.
+3. **Imágenes:** se construyen las tres imágenes Docker, Snyk las escanea y, si todo está bien, se publican en GitHub Container Registry.
+4. **Despliegue:** se levanta el sistema completo con Docker Compose y también en un clúster de Kubernetes de 3 nodos, y se corren pruebas de humo para comprobar que funciona de verdad.
 
-| Parametro | Docker Compose | Kubernetes |
-|---|---|---|
-| Replicas del backend | `BACKEND_REPLICAS=2`, escalable con `--scale` (el pipeline prueba 3) | 2 a 10 con HPA (CPU 70 %, memoria 80 %) |
-| Replicas del frontend | 1 | 2 a 6 con HPA (CPU 60 %) |
-| Limites de recursos | `deploy.resources` por servicio | `requests`/`limits` por contenedor |
-| Disponibilidad | healthchecks + `depends_on: service_healthy` | probes startup/readiness/liveness + `PodDisruptionBudget` |
-| Despliegue sin caida | - | `RollingUpdate` con `maxUnavailable: 0` |
-| Distribucion | - | `topologySpreadConstraints` entre nodos |
-| Conexiones a BD | pool configurable `DB_POOL_SIZE` | igual |
+Lo que pasa depende de dónde se suben los cambios:
 
-## Despliegue automatico y trazabilidad (IE4)
-
-Cada push a `develop` o `main` despliega automaticamente en dos entornos *cloud* simulados dentro del runner de GitHub:
-
-1. **Docker Compose** (`deploy-compose`) asociado a los *GitHub Environments* `staging` (develop) y `production` (main).
-2. **Kubernetes** (`deploy-kubernetes`) en un cluster kind de 1 control-plane + 2 workers.
-
-Ambos usan exactamente las imagenes construidas y escaneadas en ese mismo commit y terminan con [`scripts/smoke-test.sh`](scripts/smoke-test.sh), que valida frontend, health, version, conexion a MySQL, CRUD completo, regla de stock y cabeceras de seguridad.
-
-### Como se garantiza la trazabilidad
-
-| Desde | Hasta | Mecanismo |
-|---|---|---|
-| Requisito / cambio | Commit | Ramas GitFlow + Conventional Commits + PR con CI obligatorio |
-| Commit | Ejecucion del pipeline | Cada run muestra el SHA, autor y rama; artefactos `test-reports` con resultados y cobertura |
-| Commit | Imagen | Tags `<sha completo>`, `sha-<corto>`, nombre de rama y `latest` (solo main); etiqueta OCI `org.opencontainers.image.revision`; SBOM, provenance y atestacion firmada |
-| Imagen | Entorno | Compose y kustomize despliegan la imagen por SHA (nunca `latest`); historial en *Deployments* de GitHub (`staging`/`production`) |
-| Entorno | Version en ejecucion | `GET /api/health` devuelve `version` = SHA del commit, verificado por el smoke test |
-| Despliegue | Auditoria | Artefacto `deployment-compose` (JSON con commit, rama, actor, URL del run, fecha e imagenes con digest) y `kubectl rollout history` con `change-cause` |
-| Falla | Responsable | Issue automatico con enlace al commit y al run, asignado al autor |
-
-## Orquestacion (IE5)
-
-### Docker Compose
-
-[`docker-compose.yml`](docker-compose.yml) define los tres servicios con:
-
-- dependencias por **estado de salud** (`depends_on: condition: service_healthy`), resolviendo la limitacion de `depends_on` simple;
-- dos redes (`frontend-net` publica y `backend-net` interna);
-- volumen persistente `db-data`;
-- limites y reservas de CPU/memoria;
-- replicas configurables del backend balanceadas por el DNS interno de Docker;
-- politica de reinicio y rotacion de logs.
-
-### Kubernetes
-
-Manifiestos en [`k8s/`](k8s), agrupados con [`kustomization.yaml`](k8s/kustomization.yaml):
-
-| Recurso | Proposito |
+| Cuándo | Qué se ejecuta |
 |---|---|
-| `namespace.yaml` | Namespace `tienda` con Pod Security Standards |
-| `mysql-statefulset.yaml` + `mysql-service.yaml` | MySQL con identidad estable y `PersistentVolumeClaim` (antes era `Deployment` con `emptyDir` y perdia datos) |
-| `backend-deployment.yaml` / `frontend-deployment.yaml` | Rolling update sin caida, probes, recursos, contexto de seguridad |
-| `*-service.yaml` | ClusterIP interno para el backend; LoadBalancer para el frontend (NLB en EKS) |
-| `*-hpa.yaml` | Autoescalado horizontal con politicas de estabilizacion |
-| `*-pdb.yaml` | Minimo de pods disponibles ante mantenciones |
-| `network-policies.yaml` | Solo se permite publico -> frontend -> backend -> db |
-| `mysql-secret.example.yaml` | Ejemplo; el Secret real se crea fuera del repositorio |
+| Push a una rama `feature/...` | Pruebas, Snyk y construcción de imágenes (sin publicarlas) |
+| Pull request a `develop` o `main` | Lo anterior + SonarCloud + revisión de dependencias |
+| Push a `develop` | Todo + publicación de imágenes + despliegue en **staging** |
+| Push a `main` | Todo + publicación de imágenes + despliegue en **production** |
 
-Despliegue manual (por ejemplo en EKS):
+El pipeline también se puede lanzar a mano desde la pestaña **Actions → CI/CD tienda-perritos → Run workflow**, eligiendo `develop` o `main`.
+
+> Los despliegues se hacen en un **entorno cloud simulado**: una máquina de GitHub Actions donde el pipeline levanta el sistema, lo prueba y luego lo destruye. "Staging" y "production" son los nombres de los entornos en GitHub; no hay servidores externos.
+
+## Pruebas y calidad
+
+Las pruebas están en [`backend/tests`](backend/tests) y usan **Jest** y **Supertest** (lo equivalente a JUnit y JaCoCo en Java). Son 54 pruebas que cubren los casos importantes:
+
+- crear, consultar, actualizar y eliminar productos;
+- las validaciones (por ejemplo, que el stock no pueda ser negativo ni el precio menor que cero);
+- ids inválidos, JSON mal formado y rutas que no existen;
+- qué pasa cuando la base de datos falla o no responde;
+- que el servicio no arranque si faltan las credenciales.
+
+La base de datos se reemplaza por un objeto de prueba, así que las pruebas no necesitan MySQL y corren en un par de segundos.
+
+**Nuestra política de calidad**, que el pipeline aplica de forma automática:
+
+| Regla | Si no se cumple… |
+|---|---|
+| Todas las pruebas deben pasar | el pipeline se detiene |
+| Cobertura mínima del **80 %** (actualmente ~99 % de líneas y ~92 % de ramas) | el pipeline se detiene |
+| ESLint sin errores | el pipeline se detiene |
+| Quality Gate de SonarCloud aprobado | el pull request queda bloqueado |
+| Pruebas de humo después del despliegue | el despliegue se marca como fallido |
+
+Los reportes de cobertura y de pruebas quedan descargables en cada ejecución (artefacto `test-reports`), y el porcentaje de cobertura aparece en el resumen del pipeline.
+
+## Seguridad y escalabilidad
+
+**Análisis de seguridad en el pipeline:**
+
+- **Dependabot** revisa cada semana las dependencias de npm, las imágenes Docker y las acciones de GitHub, y abre pull requests cuando hay actualizaciones.
+- **Snyk** analiza las librerías del backend y también las imágenes Docker ya construidas.
+- **SonarCloud** analiza el código en busca de bugs, vulnerabilidades y malas prácticas.
+- **npm audit** y **Dependency Review** son una segunda capa de revisión de dependencias.
+
+**Bloqueos y alertas:** si Snyk encuentra una vulnerabilidad alta o crítica, o si SonarCloud no aprueba el código, el pipeline se detiene y la imagen nunca llega a publicarse ni desplegarse. Los hallazgos aparecen en la pestaña **Security** del repositorio, GitHub avisa por correo cuando algo falla, y si falla en `develop` o `main` el pipeline abre automáticamente un *issue* asignado a quien hizo el cambio.
+
+**Otras medidas:**
+
+- Ninguna contraseña está en el código: las del pipeline son tokens guardados en *GitHub Secrets* y las de MySQL se generan al azar en cada despliegue.
+- Los contenedores no se ejecutan como root y tienen permisos mínimos (sistema de archivos de solo lectura, sin capacidades extra).
+- A las imágenes finales les quitamos lo que no se usa en ejecución, como npm en el backend y gosu en MySQL, para tener menos superficie de ataque.
+- La base de datos está en una red interna a la que no se puede acceder desde afuera.
+
+**Escalabilidad:**
+
+- En Docker Compose, el backend corre con 2 réplicas y se puede escalar con `--scale`. Cada servicio tiene límites de CPU y memoria.
+- En Kubernetes, el backend escala solo entre **2 y 10 réplicas** según el uso de CPU y memoria (HPA), y el frontend entre 2 y 6.
+- Las actualizaciones se hacen sin cortar el servicio (*rolling update*) y siempre queda al menos una réplica disponible (*PodDisruptionBudget*).
+
+## Despliegue y trazabilidad
+
+Cada vez que algo llega a `develop` o `main`, el pipeline lo despliega automáticamente con las imágenes que acaba de construir y probar, y después corre [`scripts/smoke-test.sh`](scripts/smoke-test.sh), que revisa que la página cargue, que la API responda, que haya conexión con la base de datos, que el CRUD funcione y que las validaciones rechacen datos inválidos.
+
+Para poder seguir un cambio desde el código hasta el entorno:
+
+- **Cada imagen se etiqueta con el commit** que la generó (por ejemplo, `tienda-backend:b7c8aa5...`), y los despliegues usan siempre esa etiqueta, nunca `latest`.
+- El endpoint **`/api/health` devuelve la versión desplegada**, y las pruebas de humo comprueban que coincida con el commit.
+- Cada despliegue queda registrado en la sección **Environments** de GitHub (staging / production) y guarda un registro descargable (artefacto `deployment-compose`) con el commit, la rama, quién lo hizo, la fecha y las imágenes exactas.
+- Las imágenes publicadas incluyen un **SBOM** (la lista de todo lo que contienen) y una **atestación** firmada que demuestra desde qué commit y qué pipeline se construyeron.
+- En Kubernetes, `kubectl rollout history` muestra qué commit corresponde a cada versión desplegada.
+
+## Orquestación
+
+Usamos las dos opciones que vimos en el curso:
+
+**Docker Compose** ([`docker-compose.yml`](docker-compose.yml)) se usa para trabajar en local y para el despliegue rápido del pipeline. Los servicios arrancan en orden y cada uno espera a que el anterior esté *saludable* (no solo encendido), el backend y la base de datos están en una red interna, los datos se guardan en un volumen y cada contenedor tiene límites de recursos.
+
+**Kubernetes** ([`k8s/`](k8s)) es la versión pensada para producción, y el pipeline la despliega en un clúster real de 3 nodos:
+
+| Recurso | Para qué |
+|---|---|
+| `StatefulSet` + volumen persistente | MySQL no pierde los datos si el pod se reinicia |
+| `Deployment` del backend y del frontend | 2 réplicas, actualizaciones sin corte y chequeos de salud |
+| `HorizontalPodAutoscaler` | Escala según la carga |
+| `PodDisruptionBudget` | Siempre queda al menos un pod disponible |
+| `NetworkPolicy` | Solo se permite el tráfico usuario → frontend → backend → base de datos |
+| `Service` | Frontend expuesto con LoadBalancer; backend y BD solo internos |
+
+Para desplegarlo a mano en un clúster:
 
 ```bash
 kubectl create namespace tienda
-kubectl create secret generic mysql-secret -n tienda --from-literal=MYSQL_ROOT_PASSWORD=<root> --from-literal=MYSQL_USER=<usuario> --from-literal=MYSQL_PASSWORD=<password>
+kubectl create secret generic mysql-secret -n tienda --from-literal=MYSQL_ROOT_PASSWORD=<clave> --from-literal=MYSQL_USER=<usuario> --from-literal=MYSQL_PASSWORD=<clave>
 kubectl apply -k k8s/
-kubectl -n tienda get pods,svc,hpa
 ```
 
-## Configuracion inicial del repositorio
+## Relación con la pauta de evaluación
 
-Pasos que se hacen una sola vez en GitHub (requieren cuenta del equipo):
-
-1. **SonarCloud:** iniciar sesion en [sonarcloud.io](https://sonarcloud.io) con GitHub, importar `microservicio-devops`, **desactivar *Automatic Analysis*** (*Administration > Analysis Method*) y generar un token en *My Account > Security*. Verificar que `sonar.projectKey` y `sonar.organization` de [`sonar-project.properties`](sonar-project.properties) coincidan con los del proyecto.
-2. **Snyk:** crear cuenta en [snyk.io](https://snyk.io) y copiar el token desde *Account settings*.
-3. **Secrets:** en *Settings > Secrets and variables > Actions* crear `SONAR_TOKEN` y `SNYK_TOKEN`.
-4. **Dependabot:** en *Settings > Code security* activar *Dependency graph*, *Dependabot alerts* y *Dependabot security updates*.
-5. **Environments:** en *Settings > Environments* crear `staging` y `production` (opcional: revisores obligatorios en `production`).
-6. **Proteccion de ramas:** en `main` y `develop` exigir pull request, una aprobacion y los checks `Pruebas unitarias y cobertura`, `Analisis de codigo (SonarCloud)`, `Vulnerabilidades en dependencias (Snyk)` e `Imagen backend/frontend/db`.
-
-## Ejecucion local
-
-Requisitos: Docker Desktop (o Docker Engine + Compose v2) y Node.js 24 para correr las pruebas.
-
-```bash
-cp .env.example .env          # luego editar las contrasenas
-docker compose up -d --build --wait
-```
-
-- Frontend: <http://localhost:8080>
-- API a traves del frontend: <http://localhost:8080/api/productos>
-- Escalar el backend: `docker compose up -d --scale tienda-backend=3`
-- Pruebas de humo: `bash scripts/smoke-test.sh http://localhost:8080 dev`
-- Detener y borrar datos: `docker compose down -v`
-
-## GitFlow y buenas practicas
-
-Se mantiene el modelo **GitFlow** de la evaluacion anterior:
-
-- **`main`:** codigo estable desplegado en *production*. Recibe PR desde `develop` o `hotfix/*`.
-- **`develop`:** integracion continua del trabajo terminado; se despliega en *staging*.
-- **`feature/nombre`:** funcionalidad aislada creada desde `develop`.
-- **`hotfix/nombre`:** correccion urgente desde `main`, integrada luego a `main` y `develop`.
-
-Convenciones:
-
-- Commits con [Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `docs`, `refactor`, `test`, `ci`, `chore` (ej. `ci: agrega escaneo snyk al pipeline`).
-- Ramas en minusculas con guiones: `feature/filtro-productos`, `hotfix/validacion-stock`.
-- PR pequenos, con descripcion del problema, solucion y verificacion; al menos una aprobacion de otro integrante; nunca hacer merge con checks fallidos; preferir *Squash and merge*.
-- Dependabot abre sus PRs contra `develop` con prefijos `chore(deps)`, `chore(docker)` y `ci(deps)`.
-
-## Cumplimiento de la pauta EP2
-
-| Indicador | Requisito del encargo | Evidencia |
-|---|---|---|
-| **IE1** Contenedores | Dockerfile del microservicio; build de imagen en el pipeline | `backend/Dockerfile` multi-stage, `frontend/Dockerfile`, `db/Dockerfile`; job `build-images` |
-| **IE2** Pruebas automatizadas | Pruebas unitarias en el pipeline | Jest + Supertest (52 pruebas), umbral de cobertura 80 %, job `test` |
-| **IE3** Escalabilidad y seguridad | Dependabot + SonarCloud/Snyk; bloqueos/alertas si falla la seguridad | `.github/dependabot.yml`, jobs `sonarcloud`, `snyk`, `dependency-review`, Snyk Container, `alert-on-failure`; HPA, PDB, limites de recursos |
-| **IE4** Despliegue automatico y trazabilidad | Despliegue en entorno simulado; README con trazabilidad y calidad | jobs `deploy-compose` y `deploy-kubernetes`, smoke tests, environments, tags por SHA, registro de despliegue; este README |
-| **IE5** Orquestacion | Estrategia con Kubernetes o Docker Compose | `docker-compose.yml` y `k8s/` (StatefulSet, HPA, PDB, NetworkPolicy, kustomize) desplegados por el pipeline |
+| Indicador | Dónde se ve |
+|---|---|
+| **IE1** Contenedores | `backend/Dockerfile` (multi-stage), `frontend/Dockerfile`, `db/Dockerfile` y el job *Imagen* del pipeline |
+| **IE2** Pruebas automatizadas | `backend/tests`, umbral de cobertura en `backend/package.json` y el job *Pruebas unitarias y cobertura* |
+| **IE3** Seguridad y escalabilidad | `.github/dependabot.yml`, jobs de SonarCloud y Snyk, pestaña Security, HPA y límites de recursos |
+| **IE4** Despliegue automático y trazabilidad | Jobs de despliegue, pestaña Environments, imágenes etiquetadas por commit y esta documentación |
+| **IE5** Orquestación | `docker-compose.yml` y la carpeta `k8s/` |
 
 ## Uso de inteligencia artificial
 
-> Seccion obligatoria segun las instrucciones de la evaluacion. **Debe ser completada por el equipo.**
+> _Sección a completar por el equipo._
 
-- Herramienta(s) utilizada(s): _(por ejemplo: Claude Code, Anthropic)_
-- Como se aplico: _(describir en que partes se uso como apoyo y como se revisaron y validaron los resultados)_
-- Cita segun la guia de Bibliotecas Duoc UC: <https://bibliotecas.duoc.cl/ia>
+- Herramienta(s) utilizada(s): _…_
+- Cómo la usamos y cómo revisamos lo que generó: _…_
+- Referencia según la guía de Bibliotecas Duoc UC: <https://bibliotecas.duoc.cl/ia>
 
-## Conclusiones y reflexiones individuales
+## Conclusiones y reflexiones
 
-> Segun la pauta, esta seccion debe ser redactada por cada integrante **sin apoyo de IA**.
+> _Cada integrante escribe su reflexión personal (según la pauta, sin apoyo de IA)._
 
-### Integrante 1 - _(nombre)_
+### _Integrante 1_
 
-_(Reflexion personal: aprendizaje y contribucion al proyecto.)_
+_…_
 
-### Integrante 2 - _(nombre)_
+### _Integrante 2_
 
-_(Reflexion personal: aprendizaje y contribucion al proyecto.)_
+_…_
