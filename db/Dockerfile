@@ -1,7 +1,7 @@
 # Imagen oficial MySQL 8.4 LTS con el esquema y datos iniciales de la tienda.
 # Las credenciales NO se guardan en la imagen: se inyectan en tiempo de ejecucion
 # (archivo .env en Docker Compose o Secret en Kubernetes).
-FROM mysql:8.4
+FROM mysql:26.7
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="tienda-db" \
