@@ -1,0 +1,34 @@
+# Despliegue: kubectl apply -k k8s/
+# El pipeline fija la version exacta de cada imagen con:
+#   kustomize edit set image ghcr.io/lblackdevduoc/tienda-backend=ghcr.io/lblackdevduoc/tienda-backend:<sha>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: tienda
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: tienda-perritos
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - network-policies.yaml
+  - mysql-service.yaml
+  - mysql-statefulset.yaml
+  - backend-service.yaml
+  - backend-deployment.yaml
+  - backend-hpa.yaml
+  - backend-pdb.yaml
+  - frontend-service.yaml
+  - frontend-deployment.yaml
+  - frontend-hpa.yaml
+  - frontend-pdb.yaml
+
+images:
+  - name: ghcr.io/lblackdevduoc/tienda-backend
+    newTag: latest
+  - name: ghcr.io/lblackdevduoc/tienda-frontend
+    newTag: latest
+  - name: ghcr.io/lblackdevduoc/tienda-db
+    newTag: latest

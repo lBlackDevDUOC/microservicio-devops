@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tienda-frontend-pdb
+  namespace: tienda
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tienda-frontend

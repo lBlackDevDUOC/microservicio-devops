@@ -1,0 +1,138 @@
+# Orquestacion local / entorno cloud simulado de tienda-perritos.
+#
+#   Desarrollo:  docker compose up -d --build
+#   Escalar:     docker compose up -d --scale tienda-backend=3
+#   Pipeline:    IMAGE_REGISTRY=ghcr.io/<owner> IMAGE_TAG=<sha> docker compose up -d --no-build --wait
+#
+# Las credenciales se leen desde el archivo .env (ver .env.example).
+
+name: tienda-perritos
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  tienda-db:
+    <<: *hardening
+    image: ${IMAGE_REGISTRY:-local}/tienda-db:${IMAGE_TAG:-dev}
+    build:
+      context: ./db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Defina MYSQL_ROOT_PASSWORD en .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tienda_perritos}
+      MYSQL_USER: ${MYSQL_USER:?Defina MYSQL_USER en .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Defina MYSQL_PASSWORD en .env}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          memory: 384M
+
+  tienda-backend:
+    <<: *hardening
+    image: ${IMAGE_REGISTRY:-local}/tienda-backend:${IMAGE_TAG:-dev}
+    build:
+      context: ./backend
+      target: runtime
+      args:
+        APP_VERSION: ${IMAGE_TAG:-dev}
+    environment:
+      PORT: 3001
+      DB_HOST: tienda-db
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-tienda_perritos}
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      DB_POOL_SIZE: 10
+    depends_on:
+      tienda-db:
+        condition: service_healthy
+    networks:
+      - backend-net
+    # Sin puertos publicados: solo es accesible a traves del frontend (permite --scale)
+    expose:
+      - "3001"
+    read_only: true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+
+  tienda-frontend:
+    <<: *hardening
+    image: ${IMAGE_REGISTRY:-local}/tienda-frontend:${IMAGE_TAG:-dev}
+    build:
+      context: ./frontend
+      args:
+        APP_VERSION: ${IMAGE_TAG:-dev}
+    environment:
+      BACKEND_URL: http://tienda-backend:3001
+    depends_on:
+      tienda-backend:
+        condition: service_healthy
+    networks:
+      - frontend-net
+      - backend-net
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=101
+      - /etc/nginx/conf.d:uid=101,gid=101
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.30"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+networks:
+  # El frontend es el unico servicio expuesto. backend-net es interna:
+  # backend y base de datos no tienen salida a Internet ni puertos publicados.
+  frontend-net:
+  backend-net:
+    internal: true
+
+volumes:
+  db-data:
