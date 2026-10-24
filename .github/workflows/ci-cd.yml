@@ -3,8 +3,8 @@ name: CI/CD tienda-perritos
 # Flujo GitFlow:
 #  - feature/** y hotfix/**: calidad + seguridad + build de imagenes (sin publicar)
 #  - PR a develop/main:      lo anterior + revision de dependencias (bloquea el merge si falla)
-#  - develop:                publica imagenes y despliega en el entorno "staging"
-#  - main:                   publica imagenes y despliega en el entorno "production"
+#  - develop:                publica imagenes y despliega en el entorno "staging" (push o manual)
+#  - main:                   publica imagenes y despliega en el entorno "production" (push o manual)
 on:
   push:
     branches: [main, develop, "feature/**", "hotfix/**"]
@@ -24,8 +24,8 @@ concurrency:
 env:
   NODE_VERSION: "24"
   REGISTRY: ghcr.io
-  # Se publica solo en push a develop/main (no en PR ni en ramas de trabajo)
-  PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+  # Se publica solo en develop/main, por push o ejecucion manual (no en PR ni en ramas de trabajo)
+  PUBLISH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
 
 jobs:
   # ------------------------------------------------------------------
@@ -295,7 +295,7 @@ jobs:
     needs: build-images
     if: >-
       !cancelled() && needs.build-images.result == 'success' &&
-      github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+      github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     timeout-minutes: 15
     permissions:
       contents: read
@@ -396,7 +396,7 @@ jobs:
     needs: build-images
     if: >-
       !cancelled() && needs.build-images.result == 'success' &&
-      github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+      github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     timeout-minutes: 20
     permissions:
       contents: read
@@ -496,7 +496,7 @@ jobs:
     name: Alerta de pipeline fallido
     runs-on: ubuntu-latest
     needs: [test, sonarcloud, snyk, build-images, deploy-compose, deploy-kubernetes]
-    if: failure() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    if: failure() && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     permissions:
       issues: write
     steps:
