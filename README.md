@@ -127,8 +127,8 @@ flowchart LR
 |---|---|
 | Push a `feature/**` o `hotfix/**` | test, sonarcloud, snyk, build-images (sin publicar) |
 | Pull request a `develop` o `main` | lo anterior + dependency-review |
-| Push a `develop` | todo + publicacion en GHCR + despliegue en entorno **staging** |
-| Push a `main` | todo + publicacion en GHCR (tag `latest`) + despliegue en entorno **production** |
+| Push a `develop` (o *Run workflow* manual sobre `develop`) | todo + publicacion en GHCR + despliegue en entorno **staging** |
+| Push a `main` (o *Run workflow* manual sobre `main`) | todo + publicacion en GHCR (tag `latest`) + despliegue en entorno **production** |
 
 | Job | Que hace | Bloquea si... |
 |---|---|---|
