@@ -91,10 +91,13 @@ jobs:
   # ------------------------------------------------------------------
   # 2a. Seguridad SAST + quality gate: SonarCloud
   # ------------------------------------------------------------------
+  # El plan Free de SonarCloud analiza main y pull requests (no otras ramas):
+  # los cambios se validan en el PR antes del merge y main se analiza al integrarse.
   sonarcloud:
     name: Analisis de codigo (SonarCloud)
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     timeout-minutes: 10
     steps:
       - name: Descargar repositorio (historial completo para blame)
@@ -109,7 +112,7 @@ jobs:
           path: backend
 
       - name: Escaneo SonarCloud con espera del Quality Gate
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         # sonar.qualitygate.wait=true (sonar-project.properties): si el Quality Gate
@@ -168,7 +171,13 @@ jobs:
     name: Imagen ${{ matrix.service }}
     runs-on: ubuntu-latest
     # Gate de calidad y seguridad: no se construye si algo anterior fallo
+    # (SonarCloud puede venir "skipped" en ramas que no son main ni PR)
     needs: [test, sonarcloud, snyk]
+    if: >-
+      !cancelled() &&
+      needs.test.result == 'success' &&
+      needs.snyk.result == 'success' &&
+      (needs.sonarcloud.result == 'success' || needs.sonarcloud.result == 'skipped')
     timeout-minutes: 20
     permissions:
       contents: read
@@ -284,7 +293,9 @@ jobs:
     name: Despliegue Docker Compose (${{ github.ref_name == 'main' && 'production' || 'staging' }})
     runs-on: ubuntu-latest
     needs: build-images
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    if: >-
+      !cancelled() && needs.build-images.result == 'success' &&
+      github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     timeout-minutes: 15
     permissions:
       contents: read
@@ -383,7 +394,9 @@ jobs:
     name: Despliegue Kubernetes (${{ github.ref_name == 'main' && 'production' || 'staging' }})
     runs-on: ubuntu-latest
     needs: build-images
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    if: >-
+      !cancelled() && needs.build-images.result == 'success' &&
+      github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     timeout-minutes: 20
     permissions:
       contents: read
