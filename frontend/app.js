@@ -43,21 +43,28 @@ async function cargarProductos() {
 }
 
 function renderProductos(productos) {
-  tbody.innerHTML = "";
+  tbody.replaceChildren();
   productos.forEach((p) => {
     const tr = document.createElement("tr");
 
-    tr.innerHTML = `
-      <td>${p.id}</td>
-      <td>${p.nombre}</td>
-      <td>${p.descripcion || ""}</td>
-      <td>$${Number(p.precio).toFixed(2)}</td>
-      <td>${p.stock}</td>
-      <td>
-        <button data-id="${p.id}" class="btn-editar">Editar</button>
-        <button data-id="${p.id}" class="btn-eliminar danger">Eliminar</button>
-      </td>
-    `;
+    // textContent evita inyeccion de HTML (XSS) con datos provenientes de la API
+    [p.id, p.nombre, p.descripcion || "", `$${Number(p.precio).toFixed(2)}`, p.stock].forEach((valor) => {
+      const td = document.createElement("td");
+      td.textContent = valor;
+      tr.appendChild(td);
+    });
+
+    const acciones = document.createElement("td");
+    const btnEditar = document.createElement("button");
+    btnEditar.textContent = "Editar";
+    btnEditar.className = "btn-editar";
+    btnEditar.dataset.id = p.id;
+    const btnEliminar = document.createElement("button");
+    btnEliminar.textContent = "Eliminar";
+    btnEliminar.className = "btn-eliminar danger";
+    btnEliminar.dataset.id = p.id;
+    acciones.append(btnEditar, btnEliminar);
+    tr.appendChild(acciones);
 
     tbody.appendChild(tr);
   });

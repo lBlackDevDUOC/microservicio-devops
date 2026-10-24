@@ -1,17 +1,18 @@
+# Punto de entrada publico. En EKS el AWS Load Balancer Controller crea un NLB;
+# en el cluster kind del pipeline se accede con kubectl port-forward.
 apiVersion: v1
 kind: Service
 metadata:
   name: tienda-frontend
   namespace: tienda
   annotations:
-    # Indicamos que el LB lo maneja el AWS Load Balancer Controller
     service.beta.kubernetes.io/aws-load-balancer-type: "external"
-    # Forzamos que sea público y (no interno)
     service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 spec:
   type: LoadBalancer
   selector:
     app: tienda-frontend
   ports:
-    - port: 80
-      targetPort: 80
+    - name: http
+      port: 80
+      targetPort: http

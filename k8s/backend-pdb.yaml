@@ -1,0 +1,11 @@
+# Garantiza al menos una replica disponible durante mantenciones del cluster
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tienda-backend-pdb
+  namespace: tienda
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: tienda-backend

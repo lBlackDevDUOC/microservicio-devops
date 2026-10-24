@@ -31,3 +31,6 @@ Thumbs.db
 # Archivos temporales
 .tmp/
 tmp/
+
+# Reportes de pruebas
+reports/

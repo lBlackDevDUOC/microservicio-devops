@@ -5,6 +5,13 @@ metadata:
   namespace: tienda
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
+  # Despliegue sin caida: se crea un pod nuevo antes de retirar uno antiguo
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: tienda-backend
@@ -12,15 +19,37 @@ spec:
     metadata:
       labels:
         app: tienda-backend
+        tier: backend
     spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # Reparte las replicas entre nodos para tolerar la caida de uno
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: tienda-backend
       containers:
         - name: backend
-          image: 379011730405.dkr.ecr.us-east-1.amazonaws.com/tienda-backend:eks-v1
+          image: ghcr.io/lblackdevduoc/tienda-backend:latest
           ports:
-            - containerPort: 3001
+            - name: http
+              containerPort: 3001
           env:
             - name: DB_HOST
-              value: "tienda-db"
+              value: tienda-db
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: tienda_perritos
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
@@ -31,29 +60,34 @@ spec:
                 secretKeyRef:
                   name: mysql-secret
                   key: MYSQL_PASSWORD
-            - name: DB_NAME
-              value: "tienda_perritos"
-            - name: DB_PORT
-              value: "3306"
-
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
-              cpu: "100m"
-              memory: "128Mi"
+              cpu: 100m
+              memory: 128Mi
             limits:
-              cpu: "500m"
-              memory: "512Mi"
-
-          readinessProbe:
+              cpu: 500m
+              memory: 256Mi
+          startupProbe:
             httpGet:
               path: /api/health
-              port: 3001
-            initialDelaySeconds: 5
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+          # Readiness consulta MySQL: el pod no recibe trafico si la BD no responde
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: http
             periodSeconds: 5
-
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /api/health
-              port: 3001
-            initialDelaySeconds: 10
+              port: http
             periodSeconds: 10
+            failureThreshold: 3
