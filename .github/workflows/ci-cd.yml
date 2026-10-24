@@ -80,7 +80,7 @@ jobs:
 
       - name: Publicar reportes de pruebas y cobertura
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
@@ -377,7 +377,7 @@ jobs:
 
       - name: Guardar registro de despliegue
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-compose
           path: deployment/
