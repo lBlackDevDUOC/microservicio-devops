@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Nginx sin privilegios: corre como usuario nginx (uid 101) y escucha en el puerto 8080
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 
 ARG APP_VERSION=dev
 ARG VCS_REF=unknown
