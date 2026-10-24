@@ -36,6 +36,11 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
+# En ejecucion solo se necesita "node": se eliminan los gestores de paquetes
+# (npm, npx, corepack, yarn) para reducir la superficie de ataque y el tamano
+RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx \
+           /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
+
 # Solo se copian las dependencias de produccion y el codigo fuente, con un usuario sin privilegios
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json server.js ./
